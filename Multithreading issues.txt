@@ -1,0 +1,243 @@
+ActiveX EXE Multithreading
+
+This is a list of issues that I had while implementing this technology in one of my programs and how to solve them. This information took me many days to collect and should save you about a week's worth of testing. To understand this you need Srideep Prasad's tutorial on "Multithreading" (txtCodeId=24672), also available at PSC. I've tried all multithreading methods listed on PSC and I found this method to be the best.
+
+IMPORTANT:
+--------------------------
+The main problem is that these issues ONLY occur while running the program, so they are very hard to trace because you cannot use the developing enviroment, in which they don't happen.
+
+
+First I will describe my program:
+--------------------------
+It is an Email Extractor that has a main form, and other dialogs such as "About" and "Settings" (called using Form.Show vbModal).
+
+The multithreaded forms get loaded for the internet extraction, they read the URL that needs to be extracted from a public variable in the main form.
+
+Every form has an ID, and it checks using a timer if the variable in the main form with it's ID has a new URL (meaning a new job), after downloading the page, it calls the extraction functions in the main form with the downloaded text as an argument, then it resets itself so that it can receive new jobs.
+
+Calling the function in the main form is asyncronous, it can process many requests simultaneosly without mixing up the variables.
+
+So as you can imagine, this technology is very powerful and easy to implement. If you'd like to see the final result you can find it here:
+http://mitglied.lycos.de/xshapiro/
+
+
+The first issue is:
+--------------------------
+The "Sub Main", when an instance of a program is started, its window's name is App.Title, I found that the following methods work at best:
+
+-------------------------------------------------
+Sub Main()
+
+  Dim lngLoadedProcessID As Long
+  Dim frmForm As New frmMain
+  Dim lngHwnd As Long
+
+    'This routine is called whenever a new object (or a new thread) is created.
+    'Therefore we use the FindWindow API to check whether the main form is loaded or not.
+    'If not we load it.
+
+    'Get hWnd of current window
+    lngHwnd = FindWindow(vbNullString, App.Title)
+
+    'Get hWnd of already loaded window from registry
+    lngLoadedHwnd = GetSetting(App.Title, "Settings", "LoadedHwnd", 0)
+
+    'Get process ID of already loaded window
+    GetWindowThreadProcessId lngLoadedHwnd, lngLoadedProcessID
+
+    'If a process with the same ID has been loaded, then exit without loading main window
+    If lngLoadedProcessID = GetCurrentProcessId Then Exit Sub
+
+    'Else, load main window
+    frmForm.Show
+    Set frmForm = Nothing
+
+End Sub
+
+Make sure that you put the following line in your Main form's Load event:
+'Save Hwnd of current loaded window
+SaveSetting App.Title, "Settings", "LoadedHwnd", hWnd
+-------------------------------------------------
+
+
+Another method:
+--------------------------
+If you use the following method, your app will not start when debugging using the development environment, to be able to debug, you should rename the above Sub as SubMain and uncomment the lines below  marked "DEBUGGING", remember the "SaveSetting" line!
+
+I am presenting you with these two options in case you ever need them.
+
+-------------------------------------------------
+'Process list
+Private Const TH32CS_SNAPPROCESS As Long = 2&
+Private Const MAX_PATH As Integer = 260
+
+Private Type PROCESSENTRY32
+    dwSize As Long
+    cntUsage As Long
+    th32ProcessID As Long
+    th32DefaultHeapID As Long
+    th32ModuleID As Long
+    cntThreads As Long
+    th32ParentProcessID As Long
+    pcPriClassBase As Long
+    dwFlags As Long
+    szExeFile As String * MAX_PATH
+End Type
+
+Private Declare Function CreateToolhelpSnapshot Lib "kernel32" Alias "CreateToolhelp32Snapshot" (ByVal lFlags As Long, ByVal lProcessID As Long) As Long
+Private Declare Function ProcessFirst Lib "kernel32" Alias "Process32First" (ByVal hSnapShot As Long, uProcess As PROCESSENTRY32) As Long
+Private Declare Function ProcessNext Lib "kernel32" Alias "Process32Next" (ByVal hSnapShot As Long, uProcess As PROCESSENTRY32) As Long
+Private Declare Sub CloseHandle Lib "kernel32" (ByVal hPass As Long)
+Dim ListOfActiveProcesses() As PROCESSENTRY32
+
+Public Function GetActiveProcesses() As Long
+
+  Dim lnghToolhelpSnapshot As Long
+  Dim tProcess As PROCESSENTRY32
+  Dim lngCounter As Long, intProcessCount As Integer
+
+    lnghToolhelpSnapshot = CreateToolhelpSnapshot(TH32CS_SNAPPROCESS, 0&)
+
+    'Error check
+    If lnghToolhelpSnapshot = 0 Then
+        GetActiveProcesses = 0
+        Exit Function
+    End If
+
+    'Add to array
+    With tProcess
+        .dwSize = Len(tProcess)
+
+        'Get first process
+        lngCounter = ProcessFirst(lnghToolhelpSnapshot, tProcess)
+        ReDim Preserve ListOfActiveProcesses(20)
+
+        Do While lngCounter
+            intProcessCount = intProcessCount + 1
+
+            'Redim array if too small
+            If intProcessCount Mod 20 = 0 Then ReDim Preserve ListOfActiveProcesses(intProcessCount + 20)
+
+            'Assign element to array
+            ListOfActiveProcesses(intProcessCount) = tProcess
+
+            'Get next process
+            lngCounter = ProcessNext(lnghToolhelpSnapshot, tProcess)
+        Loop
+    End With
+
+    'Return
+    GetActiveProcesses = intProcessCount
+
+    'Close
+    Call CloseHandle(lnghToolhelpSnapshot)
+
+End Function
+
+'MAKE SURE TO SET THE PROJECT PROPERTIES TO STANDALONE EXE
+'MAKE SURE THE THREADING OPTION IS "THREAD PER OBJECT"
+Sub Main()
+
+  Dim lngCurrentProcessID As Long
+  Dim frmForm As New frmMain
+
+    'DEBUGGING BEGIN ==============================
+    'Call Submain
+    'Exit Sub
+    'DEBUGGING END ==============================
+
+    'This routine is called whenever a new object (or a new thread) is created.
+    'Therefore we use the FindWindow API to check whether the main form is loaded or not.
+    'If not we load it.
+
+    'Populate array with running processes
+    Call GetActiveProcesses
+
+    'Get current Process ID
+    lngCurrentProcessID = GetCurrentProcessId
+
+    'Try all elements of process array
+    For i = LBound(ListOfActiveProcesses) To UBound(ListOfActiveProcesses)
+
+        'If element = current Process ID
+        If ListOfActiveProcesses(i).th32ProcessID = lngCurrentProcessID Then
+
+            'If process has only 2 threads, load main form
+            If ListOfActiveProcesses(i).cntThreads = 2 Then
+                frmForm.Show
+                Set frmForm = Nothing
+                Exit For
+            End If
+
+        End If
+
+    Next i
+
+    'Reset array
+    ReDim ListOfActiveProcesses(0)
+
+End Sub
+
+
+-------------------------------------------------
+Either way, you will probably need to include the following lines in your main form's Load event:
+'Load only once
+If App.PrevInstance Then End
+-------------------------------------------------
+
+
+The second issue is:
+--------------------------
+I found out that you cannot use some Custom controls like "3D buttons" or whatever because they are single-threaded (if anyone knows how to solve this issue, please let me know), you can load them once, so you can use them only on, for example, your main form, otherwise you will get an error.
+
+
+The third issue is:
+--------------------------
+When you are showing another form such as, an About dialog, you would usually use:
+Form1.Show
+
+You cannot access the main form's properties such as Icon or Caption, it will crash your app.
+Calling subs or functions did nothing (also didn't work) to my app running under WinXP, but it crashed the app under older Windows versions.
+
+
+The fourth issue is:
+--------------------------
+Take a look at Srideep Prasad's function "TransferData", located in the "MTFORM".
+In this function you have a variable called "F", this object "F" will let you access all public methods, functions and variables on your main form that you declare like this:
+Dim ... or Public ...
+
+It will also let you access all properties of its controls such as Enabled, Checked, Caption, Icon or whatever.
+
+By "access" I mean "get and set". Actually, you can refer to the form as if it were a normal project.
+
+You will not be able to access variables declared in modules (Public nor Global).
+
+You can store "F" in a private variable so that you can initialize it once and then use it from anywhere in your multithreaded form.
+
+
+
+The fifth issue is:
+--------------------------
+With the method described above, you cannot access arrays or custom Types. To do this you should make functions and subs such as the following:
+
+Public Function GetThreadsSock(ByVal Index As Integer) As Integer
+
+    GetThreadsSock = CurrentThreads(Index).intSock
+
+End Function
+
+Public Sub SetThreadsSock(ByVal Index As Integer, ByVal intSock As Integer)
+
+    CurrentThreads(Index).intSock = intSock
+
+End Sub
+
+
+
+
+This is all that comes up to my mind right now, I hope it helps you and your projects.
+
+
+Luis Cantero
+Note: All my tests were done under Windows XP using VB 6 (SP5)
+Updated: 22/JUL/2002
